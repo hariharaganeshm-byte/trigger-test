@@ -275,6 +275,22 @@ def index():
             buckets = [b.name for b in storage_client.list_buckets()]
         except:
             buckets = ["my-data-uploads"]  # fallback
+    
+    # Load recent ingestions from BigQuery instead of in-memory list
+    ingestions_display = []
+    if bq_client and BQ_DATASET:
+        try:
+            query = f"""
+                SELECT bucket, object_name as name, rows_loaded as rows, status, 
+                       FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
+                FROM `{PROJECT_ID}.{BQ_DATASET}.ingestion_log`
+                ORDER BY timestamp DESC
+                LIMIT 10
+            """
+            query_job = bq_client.query(query)
+            ingestions_display = [dict(row) for row in query_job.result()]
+        except Exception as e:
+            print(f"Failed to load ingestions from BigQuery: {e}")
 
     if request.method == "POST":
         uploaded = request.files.get("file")
@@ -301,7 +317,7 @@ def index():
             except Exception as exc:  # brief error message to UI
                 message = f"Error: {exc}"
 
-    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=recent_ingests, buckets=buckets)
+    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=ingestions_display, buckets=buckets)
 
 
 @app.route("/hook", methods=["POST"])
