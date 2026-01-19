@@ -337,6 +337,10 @@ def index():
             print(f"Failed to load ingestions from BigQuery: {e}")
 
     upload_results = []
+    
+    # Declare globals if needed
+    global BQ_DATASET
+    
     if request.method == "POST":
         uploaded = request.files.get("file")
         action = request.form.get("action", "preview")
@@ -363,7 +367,6 @@ def index():
                 
                 # Update environment variable for this session
                 os.environ["BQ_DATASET"] = dataset_name
-                global BQ_DATASET
                 BQ_DATASET = dataset_name
                 
                 # Create ingestion_log table if doesn't exist
