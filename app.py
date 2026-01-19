@@ -86,26 +86,49 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="panel" style="margin-top:16px;">
-            <h2>📂 Upload CSV / Excel</h2>
+            <h2>📂 Upload CSV / Excel to GCS</h2>
             <form method="POST" enctype="multipart/form-data">
                 <div class="file-box">
                     <input type="file" name="file" accept=".csv,.xls,.xlsx" required />
                 </div>
                 <div style="margin:10px 0;">
-                    <label><strong>Select Bucket:</strong></label>
-                    <select name="bucket" style="width:100%;padding:8px;margin-top:5px;border:1px solid #ddd;border-radius:4px;">
+                    <label><strong>Folder Path (optional):</strong></label>
+                    <input type="text" name="folder" placeholder="e.g., data/2026/jan/" style="width:100%;padding:8px;margin-top:5px;border:1px solid #ddd;border-radius:4px;" />
+                    <small style="color:#666;">Leave empty for root, or specify path like: data/reports/</small>
+                </div>
+                <div style="margin:10px 0;">
+                    <label><strong>Select Bucket(s):</strong></label>
+                    <div style="max-height:150px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:8px;margin-top:5px;background:#fafafa;">
                         {% for b in buckets %}
-                        <option value="{{ b }}">{{ b }}</option>
+                        <label style="display:block;margin:4px 0;cursor:pointer;">
+                            <input type="checkbox" name="buckets" value="{{ b }}" style="margin-right:8px;" {% if loop.first %}checked{% endif %} />
+                            {{ b }}
+                        </label>
                         {% endfor %}
-                    </select>
+                    </div>
+                    <small style="color:#666;">Select one or more buckets to upload to</small>
                 </div>
                 <div style="display:flex;gap:10px;">
                     <button class="submit" type="submit" name="action" value="preview" style="flex:1;">Preview Only</button>
-                    <button class="submit" type="submit" name="action" value="upload" style="flex:1;background:#009688;">Upload to GCS</button>
+                    <button class="submit" type="submit" name="action" value="upload" style="flex:1;background:#009688;">Upload to Bucket(s)</button>
                 </div>
             </form>
             {% if message %}
             <div class="info-item" style="margin-top:10px;"><strong>{{ message }}</strong></div>
+            {% endif %}
+            {% if upload_results %}
+            <div style="margin-top:15px;padding:10px;background:#e8f5e9;border-radius:4px;">
+                <h3 style="margin:0 0 10px 0;color:#2e7d32;">✅ Upload Complete</h3>
+                {% for result in upload_results %}
+                <div class="info-item" style="margin:5px 0;">
+                    <strong>Bucket:</strong> {{ result.bucket }}<br/>
+                    <strong>Object:</strong> {{ result.object }}<br/>
+                    <strong>URL:</strong> <code style="font-size:11px;background:#fff;padding:2px 4px;border-radius:2px;">gs://{{ result.bucket }}/{{ result.object }}</code><br/>
+                    <strong>BigQuery Table:</strong> <code style="font-size:11px;background:#fff;padding:2px 4px;border-radius:2px;">{{ result.bq_table }}</code><br/>
+                    <small style="color:#666;">Auto-ingestion will start in ~10 seconds</small>
+                </div>
+                {% endfor %}
+            </div>
             {% endif %}
             {% if preview %}
             <div class="uploads">
@@ -292,10 +315,12 @@ def index():
         except Exception as e:
             print(f"Failed to load ingestions from BigQuery: {e}")
 
+    upload_results = []
     if request.method == "POST":
         uploaded = request.files.get("file")
         action = request.form.get("action", "preview")
-        bucket_name = request.form.get("bucket", "")
+        selected_buckets = request.form.getlist("buckets")
+        folder_path = request.form.get("folder", "").strip()
         
         if not uploaded:
             message = "No file uploaded."
@@ -305,19 +330,42 @@ def index():
                 recent_uploads.insert(0, {**preview, "timestamp": datetime.utcnow().isoformat() + "Z"})
                 del recent_uploads[10:]
                 
-                # If user chose "Upload to GCS", upload the file
-                if action == "upload" and bucket_name and storage_client:
-                    uploaded.seek(0)  # Reset file pointer
-                    bucket = storage_client.bucket(bucket_name)
-                    blob = bucket.blob(uploaded.filename)
-                    blob.upload_from_file(uploaded)
-                    message = f"File uploaded to gs://{bucket_name}/{uploaded.filename} - Ingestion will trigger automatically!"
+                # If user chose "Upload to GCS", upload to selected buckets
+                if action == "upload" and selected_buckets and storage_client:
+                    # Construct object path with folder
+                    if folder_path:
+                        # Ensure folder ends with /
+                        if not folder_path.endswith("/"):
+                            folder_path += "/"
+                        object_name = folder_path + uploaded.filename
+                    else:
+                        object_name = uploaded.filename
+                    
+                    # Upload to each selected bucket
+                    for bucket_name in selected_buckets:
+                        uploaded.seek(0)  # Reset file pointer for each upload
+                        bucket = storage_client.bucket(bucket_name)
+                        blob = bucket.blob(object_name)
+                        blob.upload_from_file(uploaded)
+                        
+                        # Generate table name from object name
+                        import re
+                        table_name = re.sub(r'[^a-zA-Z0-9_]', '_', object_name.rsplit('.', 1)[0])
+                        bq_table = f"{PROJECT_ID}.{BQ_DATASET}.{table_name}"
+                        
+                        upload_results.append({
+                            "bucket": bucket_name,
+                            "object": object_name,
+                            "bq_table": bq_table
+                        })
+                    
+                    message = f"✅ File uploaded to {len(selected_buckets)} bucket(s)"
                 else:
                     message = "Upload parsed successfully (preview only)."
             except Exception as exc:  # brief error message to UI
                 message = f"Error: {exc}"
 
-    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=ingestions_display, buckets=buckets)
+    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=ingestions_display, buckets=buckets, upload_results=upload_results)
 
 
 @app.route("/hook", methods=["POST"])
