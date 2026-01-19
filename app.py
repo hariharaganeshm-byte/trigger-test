@@ -256,14 +256,16 @@ def hook():
     print(json.dumps(payload, indent=2))
 
     # Expecting Pub/Sub push with message.data base64 containing GCS event
+    bucket = ""
+    name = ""
     try:
         msg = payload.get("message", {})
         data_b64 = msg.get("data")
         if not data_b64:
             raise ValueError("Missing Pub/Sub data")
-        event_json = json.loads(io.BytesIO(base64.b64decode(data_b64)).read().decode("utf-8"))
-        bucket = event_json.get("bucket")
-        name = event_json.get("name")
+        event_json = json.loads(base64.b64decode(data_b64).decode("utf-8"))
+        bucket = event_json.get("bucket", "")
+        name = event_json.get("name", "")
         if not bucket or not name:
             raise ValueError("Missing bucket/name in event")
 
@@ -280,12 +282,13 @@ def hook():
     except Exception as exc:
         recent_ingests.insert(0, {
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "bucket": payload.get("bucket", ""),
-            "name": payload.get("name", ""),
+            "bucket": bucket,
+            "name": name,
             "rows": 0,
             "status": f"ERROR: {exc}"
         })
         del recent_ingests[10:]
+        print(f"ERROR: {exc}")
         return f"Error: {exc}", 400
 
 
