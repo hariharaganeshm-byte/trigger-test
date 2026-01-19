@@ -91,7 +91,18 @@ HTML_TEMPLATE = """
                 <div class="file-box">
                     <input type="file" name="file" accept=".csv,.xls,.xlsx" required />
                 </div>
-                <button class="submit" type="submit">Upload & Preview</button>
+                <div style="margin:10px 0;">
+                    <label><strong>Select Bucket:</strong></label>
+                    <select name="bucket" style="width:100%;padding:8px;margin-top:5px;border:1px solid #ddd;border-radius:4px;">
+                        {% for b in buckets %}
+                        <option value="{{ b }}">{{ b }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div style="display:flex;gap:10px;">
+                    <button class="submit" type="submit" name="action" value="preview" style="flex:1;">Preview Only</button>
+                    <button class="submit" type="submit" name="action" value="upload" style="flex:1;background:#009688;">Upload to GCS</button>
+                </div>
             </form>
             {% if message %}
             <div class="info-item" style="margin-top:10px;"><strong>{{ message }}</strong></div>
@@ -256,9 +267,20 @@ def ingest_gcs_object(bucket_name, object_name):
 def index():
     preview = None
     message = None
+    
+    # Get list of buckets
+    buckets = []
+    if storage_client:
+        try:
+            buckets = [b.name for b in storage_client.list_buckets()]
+        except:
+            buckets = ["my-data-uploads"]  # fallback
 
     if request.method == "POST":
         uploaded = request.files.get("file")
+        action = request.form.get("action", "preview")
+        bucket_name = request.form.get("bucket", "")
+        
         if not uploaded:
             message = "No file uploaded."
         else:
@@ -266,11 +288,20 @@ def index():
                 preview = parse_upload(uploaded)
                 recent_uploads.insert(0, {**preview, "timestamp": datetime.utcnow().isoformat() + "Z"})
                 del recent_uploads[10:]
-                message = "Upload parsed successfully."
+                
+                # If user chose "Upload to GCS", upload the file
+                if action == "upload" and bucket_name and storage_client:
+                    uploaded.seek(0)  # Reset file pointer
+                    bucket = storage_client.bucket(bucket_name)
+                    blob = bucket.blob(uploaded.filename)
+                    blob.upload_from_file(uploaded)
+                    message = f"File uploaded to gs://{bucket_name}/{uploaded.filename} - Ingestion will trigger automatically!"
+                else:
+                    message = "Upload parsed successfully (preview only)."
             except Exception as exc:  # brief error message to UI
                 message = f"Error: {exc}"
 
-    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=recent_ingests)
+    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=recent_ingests, buckets=buckets)
 
 
 @app.route("/hook", methods=["POST"])
