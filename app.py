@@ -14,6 +14,9 @@ app = Flask(__name__)
 recent_uploads = []
 recent_ingests = []
 
+# Track selected dataset (persists across requests in this container)
+current_dataset = None
+
 PROJECT_ID = os.environ.get("PROJECT_ID")
 BQ_DATASET = os.environ.get("BQ_DATASET")
 BQ_TABLE = os.environ.get("BQ_TABLE")
@@ -247,13 +250,18 @@ def parse_upload(file_storage):
 
 def load_to_bigquery(df, source_bucket, source_object):
     """Load CSV/Excel data to BigQuery and log metadata to ingestion_log table."""
-    if not (PROJECT_ID and BQ_DATASET and bq_client):
+    global current_dataset
+    
+    # Use current_dataset if set, otherwise use BQ_DATASET
+    dataset = current_dataset or BQ_DATASET
+    
+    if not (PROJECT_ID and dataset and bq_client):
         raise RuntimeError("BigQuery is not configured. Set PROJECT_ID, BQ_DATASET.")
 
     # Create table name from object name (sanitize: remove extension, replace invalid chars)
     import re
     table_name = re.sub(r'[^a-zA-Z0-9_]', '_', source_object.rsplit('.', 1)[0])
-    data_table_id = f"{PROJECT_ID}.{BQ_DATASET}.{table_name}"
+    data_table_id = f"{PROJECT_ID}.{dataset}.{table_name}"
     
     # Load actual CSV/Excel data to dynamically named table
     job_config = bigquery.LoadJobConfig(
@@ -265,7 +273,7 @@ def load_to_bigquery(df, source_bucket, source_object):
     rows_loaded = len(df)
     
     # Log metadata to ingestion_log table
-    log_table_id = f"{PROJECT_ID}.{BQ_DATASET}.ingestion_log"
+    log_table_id = f"{PROJECT_ID}.{dataset}.ingestion_log"
     log_df = pd.DataFrame([{
         "bucket": source_bucket,
         "object_name": source_object,
@@ -301,7 +309,7 @@ def ingest_gcs_object(bucket_name, object_name):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    global BQ_DATASET
+    global BQ_DATASET, current_dataset
     
     preview = None
     message = None
@@ -322,14 +330,17 @@ def index():
         except:
             datasets = []
     
+    # Use current_dataset if set, otherwise use default BQ_DATASET
+    active_dataset = current_dataset or BQ_DATASET
+    
     # Load recent ingestions from BigQuery instead of in-memory list
     ingestions_display = []
-    if bq_client and BQ_DATASET:
+    if bq_client and active_dataset:
         try:
             query = f"""
                 SELECT bucket, object_name as name, rows_loaded as row_count, status, 
                        FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
-                FROM `{PROJECT_ID}.{BQ_DATASET}.ingestion_log`
+                FROM `{PROJECT_ID}.{active_dataset}.ingestion_log`
                 ORDER BY timestamp DESC
                 LIMIT 10
             """
@@ -347,7 +358,7 @@ def index():
         folder_path = request.form.get("folder", "").strip()
         dataset_name = request.form.get("new_dataset", "").strip() or request.form.get("dataset", "").strip()
         
-        # Create dataset if new name provided
+        # Create dataset if new name provided or set current_dataset
         if dataset_name and bq_client and action == "upload":
             try:
                 import re
@@ -364,9 +375,10 @@ def index():
                     bq_client.create_dataset(dataset, exists_ok=True)
                     message = f"✅ Created dataset: {dataset_name}"
                 
-                # Update environment variable for this session
-                os.environ["BQ_DATASET"] = dataset_name
+                # Store as current dataset for this container instance
+                current_dataset = dataset_name
                 BQ_DATASET = dataset_name
+                os.environ["BQ_DATASET"] = dataset_name
                 
                 # Create ingestion_log table if doesn't exist
                 table_id = f"{PROJECT_ID}.{dataset_name}.ingestion_log"
