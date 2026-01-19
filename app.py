@@ -192,12 +192,13 @@ HTML_TEMPLATE = """
             <h2>🗄️ Recent Ingestions (GCS → BQ)</h2>
             {% if ingests %}
             <table>
-                <thead><tr><th>When</th><th>Bucket/Object</th><th>Rows</th><th>Status</th></tr></thead>
+                <thead><tr><th>When</th><th>GCS Source</th><th>BigQuery Destination</th><th>Rows</th><th>Status</th></tr></thead>
                 <tbody>
                     {% for g in ingests %}
                     <tr>
                         <td>{{ g.timestamp }}</td>
                         <td>{{ g.bucket }}/{{ g.name }}</td>
+                        <td><code style="font-size:11px;background:#f5f5f5;padding:2px 4px;border-radius:2px;">{{ g.bq_dataset }}.{{ g.bq_table }}</code></td>
                         <td>{{ g.row_count }}</td>
                         <td>{{ g.status }}</td>
                     </tr>
@@ -210,7 +211,7 @@ HTML_TEMPLATE = """
         </div>
 
         <footer>
-            <p>Deployed with Cloud Build • Auto-scaling on Cloud Run</p>
+            <p>Deployed with Cloud Build </p>
             <p style="margin-top: 8px; font-size: 11px;">Push to GitHub → Cloud Build triggers → Auto-deploy to Cloud Run</p>
         </footer>
     </div>
@@ -277,6 +278,8 @@ def load_to_bigquery(df, source_bucket, source_object):
     log_df = pd.DataFrame([{
         "bucket": source_bucket,
         "object_name": source_object,
+        "bq_dataset": dataset,
+        "bq_table": table_name,
         "rows_loaded": rows_loaded,
         "status": "OK",
         "timestamp": pd.Timestamp.utcnow()
@@ -338,7 +341,7 @@ def index():
     if bq_client and active_dataset:
         try:
             query = f"""
-                SELECT bucket, object_name as name, rows_loaded as row_count, status, 
+                SELECT bucket, object_name as name, bq_dataset, bq_table, rows_loaded as row_count, status, 
                        FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
                 FROM `{PROJECT_ID}.{active_dataset}.ingestion_log`
                 ORDER BY timestamp DESC
@@ -385,6 +388,8 @@ def index():
                 schema = [
                     bigquery.SchemaField("bucket", "STRING"),
                     bigquery.SchemaField("object_name", "STRING"),
+                    bigquery.SchemaField("bq_dataset", "STRING"),
+                    bigquery.SchemaField("bq_table", "STRING"),
                     bigquery.SchemaField("rows_loaded", "INTEGER"),
                     bigquery.SchemaField("status", "STRING"),
                     bigquery.SchemaField("timestamp", "TIMESTAMP"),
