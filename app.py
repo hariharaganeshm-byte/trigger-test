@@ -97,6 +97,19 @@ HTML_TEMPLATE = """
                     <small style="color:#666;">Leave empty for root, or specify path like: data/reports/</small>
                 </div>
                 <div style="margin:10px 0;">
+                    <label><strong>BigQuery Dataset:</strong></label>
+                    <div style="display:flex;gap:10px;margin-top:5px;">
+                        <select name="dataset" id="datasetSelect" style="flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;">
+                            <option value="">-- Select Existing Dataset --</option>
+                            {% for ds in datasets %}
+                            <option value="{{ ds }}" {% if ds == 'uploads' %}selected{% endif %}>{{ ds }}</option>
+                            {% endfor %}
+                        </select>
+                        <input type="text" name="new_dataset" id="newDataset" placeholder="Or create new dataset" style="flex:1;padding:8px;border:1px solid #ddd;border-radius:4px;" />
+                    </div>
+                    <small style="color:#666;">Select existing or type new dataset name (e.g., sales_data, reports_2026)</small>
+                </div>
+                <div style="margin:10px 0;">
                     <label><strong>Select Bucket(s):</strong></label>
                     <div style="max-height:150px;overflow-y:auto;border:1px solid #ddd;border-radius:4px;padding:8px;margin-top:5px;background:#fafafa;">
                         {% for b in buckets %}
@@ -182,7 +195,7 @@ HTML_TEMPLATE = """
                     <tr>
                         <td>{{ g.timestamp }}</td>
                         <td>{{ g.bucket }}/{{ g.name }}</td>
-                        <td>{{ g.rows }}</td>
+                        <td>{{ g.row_count }}</td>
                         <td>{{ g.status }}</td>
                     </tr>
                     {% endfor %}
@@ -299,12 +312,20 @@ def index():
         except:
             buckets = ["my-data-uploads"]  # fallback
     
+    # Get list of BigQuery datasets
+    datasets = []
+    if bq_client:
+        try:
+            datasets = [ds.dataset_id for ds in bq_client.list_datasets()]
+        except:
+            datasets = []
+    
     # Load recent ingestions from BigQuery instead of in-memory list
     ingestions_display = []
     if bq_client and BQ_DATASET:
         try:
             query = f"""
-                SELECT bucket, object_name as name, rows_loaded as rows, status, 
+                SELECT bucket, object_name as name, rows_loaded as row_count, status, 
                        FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
                 FROM `{PROJECT_ID}.{BQ_DATASET}.ingestion_log`
                 ORDER BY timestamp DESC
@@ -321,9 +342,46 @@ def index():
         action = request.form.get("action", "preview")
         selected_buckets = request.form.getlist("buckets")
         folder_path = request.form.get("folder", "").strip()
+        dataset_name = request.form.get("new_dataset", "").strip() or request.form.get("dataset", "").strip()
+        
+        # Create dataset if new name provided
+        if dataset_name and bq_client and action == "upload":
+            try:
+                import re
+                # Sanitize dataset name
+                dataset_name = re.sub(r'[^a-zA-Z0-9_]', '_', dataset_name)
+                dataset_id = f"{PROJECT_ID}.{dataset_name}"
+                
+                # Try to get dataset, create if doesn't exist
+                try:
+                    bq_client.get_dataset(dataset_id)
+                except:
+                    dataset = bigquery.Dataset(dataset_id)
+                    dataset.location = "US"
+                    bq_client.create_dataset(dataset, exists_ok=True)
+                    message = f"✅ Created dataset: {dataset_name}"
+                
+                # Update environment variable for this session
+                os.environ["BQ_DATASET"] = dataset_name
+                global BQ_DATASET
+                BQ_DATASET = dataset_name
+                
+                # Create ingestion_log table if doesn't exist
+                table_id = f"{PROJECT_ID}.{dataset_name}.ingestion_log"
+                schema = [
+                    bigquery.SchemaField("bucket", "STRING"),
+                    bigquery.SchemaField("object_name", "STRING"),
+                    bigquery.SchemaField("rows_loaded", "INTEGER"),
+                    bigquery.SchemaField("status", "STRING"),
+                    bigquery.SchemaField("timestamp", "TIMESTAMP"),
+                ]
+                table = bigquery.Table(table_id, schema=schema)
+                bq_client.create_table(table, exists_ok=True)
+            except Exception as e:
+                message = f"⚠️ Dataset error: {e}"
         
         if not uploaded:
-            message = "No file uploaded."
+            message = message if message else "No file uploaded."
         else:
             try:
                 preview = parse_upload(uploaded)
@@ -365,7 +423,7 @@ def index():
             except Exception as exc:  # brief error message to UI
                 message = f"Error: {exc}"
 
-    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=ingestions_display, buckets=buckets, upload_results=upload_results)
+    return render_template_string(HTML_TEMPLATE, uploads=recent_uploads, preview=preview, message=message, ingests=ingestions_display, buckets=buckets, upload_results=upload_results, datasets=datasets)
 
 
 @app.route("/hook", methods=["POST"])
