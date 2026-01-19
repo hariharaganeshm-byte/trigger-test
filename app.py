@@ -340,8 +340,12 @@ def index():
     ingestions_display = []
     if bq_client and active_dataset:
         try:
+            # Try new schema first (with bq_dataset and bq_table)
             query = f"""
-                SELECT bucket, object_name as name, bq_dataset, bq_table, rows_loaded as row_count, status, 
+                SELECT bucket, object_name as name, 
+                       COALESCE(bq_dataset, '{active_dataset}') as bq_dataset,
+                       COALESCE(bq_table, object_name) as bq_table,
+                       rows_loaded as row_count, status, 
                        FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
                 FROM `{PROJECT_ID}.{active_dataset}.ingestion_log`
                 ORDER BY timestamp DESC
