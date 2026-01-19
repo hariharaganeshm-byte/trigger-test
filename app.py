@@ -274,12 +274,11 @@ def load_to_bigquery(df, source_bucket, source_object):
     rows_loaded = len(df)
     
     # Log metadata to ingestion_log table
+    # Only include fields that exist in the original schema (backward compatible)
     log_table_id = f"{PROJECT_ID}.{dataset}.ingestion_log"
     log_df = pd.DataFrame([{
         "bucket": source_bucket,
         "object_name": source_object,
-        "bq_dataset": dataset,
-        "bq_table": table_name,
         "rows_loaded": rows_loaded,
         "status": "OK",
         "timestamp": pd.Timestamp.utcnow()
@@ -340,13 +339,12 @@ def index():
     ingestions_display = []
     if bq_client and active_dataset:
         try:
-            # Try new schema first (with bq_dataset and bq_table)
+            # Query ingestion_log and compute BigQuery destination table name from object_name
             query = f"""
-                SELECT bucket, object_name as name, 
-                       COALESCE(bq_dataset, '{active_dataset}') as bq_dataset,
-                       COALESCE(bq_table, object_name) as bq_table,
-                       rows_loaded as row_count, status, 
-                       FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp
+                SELECT bucket, object_name as name, rows_loaded as row_count, status, 
+                       FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', timestamp) as timestamp,
+                       '{active_dataset}' as bq_dataset,
+                       REGEXP_REPLACE(SPLIT(object_name, '.')[OFFSET(0)], r'[^a-zA-Z0-9_]', '_') as bq_table
                 FROM `{PROJECT_ID}.{active_dataset}.ingestion_log`
                 ORDER BY timestamp DESC
                 LIMIT 10
