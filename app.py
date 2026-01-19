@@ -199,13 +199,37 @@ def parse_upload(file_storage):
 
 
 def load_to_bigquery(df, source_bucket, source_object):
-    if not (PROJECT_ID and BQ_DATASET and BQ_TABLE and bq_client):
-        raise RuntimeError("BigQuery is not configured. Set PROJECT_ID, BQ_DATASET, BQ_TABLE.")
+    """Load CSV/Excel data to BigQuery and log metadata to ingestion_log table."""
+    if not (PROJECT_ID and BQ_DATASET and bq_client):
+        raise RuntimeError("BigQuery is not configured. Set PROJECT_ID, BQ_DATASET.")
 
-    table_id = f"{PROJECT_ID}.{BQ_DATASET}.{BQ_TABLE}"
-    job = bq_client.load_table_from_dataframe(df, table_id)
+    # Create table name from object name (sanitize: remove extension, replace invalid chars)
+    import re
+    table_name = re.sub(r'[^a-zA-Z0-9_]', '_', source_object.rsplit('.', 1)[0])
+    data_table_id = f"{PROJECT_ID}.{BQ_DATASET}.{table_name}"
+    
+    # Load actual CSV/Excel data to dynamically named table
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,  # Overwrite if exists
+        autodetect=True,  # Auto-detect schema
+    )
+    job = bq_client.load_table_from_dataframe(df, data_table_id, job_config=job_config)
     job.result()  # wait for load
-    return job.output_rows or len(df)
+    rows_loaded = len(df)
+    
+    # Log metadata to ingestion_log table
+    log_table_id = f"{PROJECT_ID}.{BQ_DATASET}.ingestion_log"
+    log_df = pd.DataFrame([{
+        "bucket": source_bucket,
+        "object_name": source_object,
+        "rows_loaded": rows_loaded,
+        "status": "OK",
+        "timestamp": pd.Timestamp.utcnow()
+    }])
+    log_job = bq_client.load_table_from_dataframe(log_df, log_table_id)
+    log_job.result()
+    
+    return rows_loaded
 
 
 def ingest_gcs_object(bucket_name, object_name):
