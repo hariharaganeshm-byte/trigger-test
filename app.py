@@ -301,6 +301,8 @@ def ingest_gcs_object(bucket_name, object_name):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    global BQ_DATASET
+    
     preview = None
     message = None
     
@@ -337,9 +339,6 @@ def index():
             print(f"Failed to load ingestions from BigQuery: {e}")
 
     upload_results = []
-    
-    # Declare globals if needed
-    global BQ_DATASET
     
     if request.method == "POST":
         uploaded = request.files.get("file")
