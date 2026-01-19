@@ -1,4 +1,4 @@
-from flask import Flask, request, render_string
+from flask import Flask, request
 import json
 import os
  
@@ -168,7 +168,7 @@ HTML_TEMPLATE = """
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "GET":
-        return render_string(HTML_TEMPLATE)
+        return HTML_TEMPLATE
     elif request.method == "POST":
         print("✅ FILE UPLOAD TRIGGER RECEIVED")
         print(json.dumps(request.get_json(), indent=2))
